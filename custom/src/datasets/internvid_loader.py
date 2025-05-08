@@ -151,7 +151,6 @@ class InternVidDataset(Dataset):
 
         print(f"Finding video pairs for {self.fake_video_path}")
         self.video_pairs = self._find_video_pairs()
-        log_and_exit("[DEBUG] -- [EXIT]")
         if not self.video_pairs:
             raise ValueError("No valid video pairs found. Check paths and metadata.")
 
@@ -171,21 +170,11 @@ class InternVidDataset(Dataset):
 
         valid_pairs = []
         fake_files = [f for f in os.listdir(self.fake_video_path)
-                      if os.path.isfile(os.path.join(self.fake_video_path, f))]
+                    if os.path.isfile(os.path.join(self.fake_video_path, f))]
 
         logger.info(f"Found {len(fake_files)} potential fake videos in {self.fake_video_path}.")
         
-        # Debug information
-        print("First 5 fake filenames:", fake_files[:5])
-        print("First 5 metadata keys:", list(metadata.keys())[:5])
-        
-        # Check if filenames need normalization
-        sample_metadata_key = next(iter(metadata.keys()))
-        print("Sample metadata key format:", sample_metadata_key)
-        # Find the metadata for the first 
-        log_and_exit("[DEBUG] -- [EXIT]")
-
-        for fake_filename in fake_files:
+        for fake_filename in fake_files[0:10]:
             fake_filepath = os.path.join(self.fake_video_path, fake_filename)
 
             # Check fake file size first
@@ -203,6 +192,11 @@ class InternVidDataset(Dataset):
 
 
             # --- Find corresponding real video ---
+            # Strip and find the file extension of the fake file name
+            file_ext = os.path.splitext(fake_filename)[1]
+            # Strip the file extension from the fake file name
+            fake_filename = os.path.splitext(fake_filename)[0]
+            
             meta_entry = metadata.get(fake_filename)
             if not meta_entry:
                 warnings.warn(f"No metadata entry found for fake video: {fake_filename}")
@@ -219,17 +213,19 @@ class InternVidDataset(Dataset):
                 continue
 
             real_filepath = _find_real_video_path(fake_filename, partition_num, self.real_video_paths)
+            # Append .mp4 extension to real_filepath
+            real_filepath = real_filepath + file_ext
 
             if real_filepath and os.path.exists(real_filepath):
-                 # Check real file size
+                # Check real file size
                 try:
                     _rsize = os.path.getsize(real_filepath)
                     if _rsize < 1 * 1024:
                         warnings.warn(f'Skipping potentially corrupt real video (too small): {real_filepath}')
                         continue
                     if _rsize > self.filter_long_videos:
-                         warnings.warn(f'Skipping long real video (size {_rsize} > {self.filter_long_videos}): {real_filepath}')
-                         continue
+                        warnings.warn(f'Skipping long real video (size {_rsize} > {self.filter_long_videos}): {real_filepath}')
+                        continue
                     valid_pairs.append((real_filepath, fake_filepath))
                 except OSError as e:
                     warnings.warn(f"Could not get size for real video {real_filepath}: {e}")
@@ -250,7 +246,7 @@ class InternVidDataset(Dataset):
 
         Returns:
             A list of numpy arrays, where each array contains the frame indices for one clip.
-            Returns None if the video is too short based on filtering settings (implicitly handled).
+            Returns None if the video is too short based on filtering settings.
         """
         fpc = self.frames_per_clip
         fstp = self.frame_step
@@ -269,37 +265,39 @@ class InternVidDataset(Dataset):
 
         clip_len_frames = int(fpc * current_fstp) # Total frames spanned by one clip
 
-        # Basic check: Video must be long enough for at least one clip frame span
-        # Note: Original video_dataset had filter_short_videos flag, here we imply it.
-        if video_len < 1: # Handle empty video case
-             return None
-        # A single clip needs at least fpc frames, potentially spaced out.
-        # The indices calculation below handles needing `clip_len_frames` total span.
-        if video_len < fpc:
-             warnings.warn(f"Video length {video_len} is shorter than frames_per_clip {fpc}. Cannot sample.")
-             return None
-        # If not overlapping, need enough frames for all clips without overlap
-        if not self.allow_clip_overlap and video_len < clip_len_frames * self.num_clips:
-             warnings.warn(f"Video length {video_len} too short for {self.num_clips} non-overlapping clips of span {clip_len_frames}. Skipping.")
-             return None
-        # If overlapping allowed, still need enough for one clip span
-        if self.allow_clip_overlap and video_len < clip_len_frames:
-             warnings.warn(f"Video length {video_len} too short for one clip of span {clip_len_frames}. Skipping.")
-             return None
-
+        # Basic check: Video must have at least 1 frame
+        if video_len < 1:
+            warnings.warn(f"Video has no frames (length: {video_len}). Cannot sample.")
+            return None
+        
+        # We can always sample from a video with at least 1 frame by repeating the last frame
+        # No need to check if video_len < fpc since we'll handle that case by repeating frames
+        
+        # If not allowing clip overlap, we need at least num_clips frames
+        # (in the extreme case, we'd sample 1 frame per clip and repeat it)
+        if not self.allow_clip_overlap and video_len < self.num_clips:
+            warnings.warn(f"Video length {video_len} is less than num_clips {self.num_clips} and overlap is not allowed. Cannot sample.")
+            return None
 
         all_clip_indices = []
         partition_len = video_len // self.num_clips # Length of each segment
+        
+        # Ensure partition_len is at least 1
+        partition_len = max(1, partition_len)
 
+        actual_clip_len_frames = clip_len_frames # Max span possible
+        
+        print(f"Frames per partition: {partition_len}")
         for i in range(self.num_clips):
             start_offset = i * partition_len
             end_offset = (i + 1) * partition_len
 
             # --- Logic adapted from video_dataset.py ---
             indices = None
-            actual_clip_len_frames = min(clip_len_frames, video_len) # Max span possible
+            # actual_clip_len_frames = min(clip_len_frames, video_len) # Max span possible
 
             if partition_len >= actual_clip_len_frames:
+                print(f"Partition len >= actual clip len frames")
                 # Sample a window within the partition
                 max_start_frame = end_offset - actual_clip_len_frames
                 # Ensure max_start_frame is not before the partition start
@@ -309,7 +307,7 @@ class InternVidDataset(Dataset):
                 if self.random_clip_sampling and max_start_frame > start_offset:
                     start_frame = np.random.randint(start_offset, max_start_frame + 1)
                 elif self.random_clip_sampling: # If max_start_frame == start_offset
-                     start_frame = start_offset
+                    start_frame = start_offset
 
                 end_frame = start_frame + actual_clip_len_frames
                 # Generate indices within this window
@@ -318,13 +316,15 @@ class InternVidDataset(Dataset):
                 indices = np.clip(indices, 0, video_len - 1)
 
             else: # partition_len < actual_clip_len_frames
+                print(f"Partition len < actual clip len frames")
                 if not self.allow_clip_overlap:
+                    print("Not allowing clip overlap    ")
                     # Sample from the start of the partition, repeat last frame if needed
                     num_available_frames = end_offset - start_offset
                     # Calculate how many frames we can actually sample with the step
                     num_stepped_frames = max(1, num_available_frames // current_fstp)
                     sampled_indices = np.linspace(start_offset, start_offset + (num_stepped_frames - 1) * current_fstp,
-                                                  num=num_stepped_frames, dtype=np.int64)
+                                                num=num_stepped_frames, dtype=np.int64)
 
                     # Repeat the last frame if we don't have enough unique frames for fpc
                     num_repeats = fpc - len(sampled_indices)
@@ -343,27 +343,31 @@ class InternVidDataset(Dataset):
 
 
                 else: # allow_clip_overlap and partition_len < actual_clip_len_frames
+                    print("Allowing clip overlap")
                     # Sample starting near the beginning of the partition, potentially overlapping
                     # Calculate the step between the *start* of each clip if overlap is allowed
                     clip_start_step = 0
                     if self.num_clips > 1 and video_len > actual_clip_len_frames:
-                         # Distribute start points evenly across the possible range
+                        # Distribute start points evenly across the possible range
                         clip_start_step = (video_len - actual_clip_len_frames) // (self.num_clips - 1)
 
                     start_frame = i * clip_start_step
                     end_frame = start_frame + actual_clip_len_frames
                     # Generate indices within this potentially overlapping window
                     indices = np.linspace(start_frame, end_frame - 1, num=fpc, dtype=np.int64)
-                     # Clip indices to be within the video bounds strictly
+                    # Clip indices to be within the video bounds strictly
                     indices = np.clip(indices, 0, video_len - 1)
+            
+            print(f"Sampled indices for partition {i}: {indices}")
 
 
             if indices is None or len(indices) != fpc:
-                 warnings.warn(f"Failed to generate exactly {fpc} indices for clip {i}. Got {len(indices) if indices is not None else 'None'}. Video len: {video_len}, partition len: {partition_len}, clip span: {actual_clip_len_frames}. Skipping video pair.")
-                 return None # Indicate failure
+                warnings.warn(f"Failed to generate exactly {fpc} indices for clip {i}. Got {len(indices) if indices is not None else 'None'}. Video len: {video_len}, partition len: {partition_len}, clip span: {actual_clip_len_frames}. Skipping video pair.")
+                return None # Indicate failure
 
             all_clip_indices.append(indices)
 
+        print(f"All clip indices: {all_clip_indices}")
         return all_clip_indices
 
 
@@ -389,8 +393,8 @@ class InternVidDataset(Dataset):
             # Check size again just before loading (optional, mostly done in init)
             _fsize = os.path.getsize(video_path)
             if _fsize < 1 * 1024 or _fsize > self.filter_long_videos:
-                 warnings.warn(f"Video {video_path} size check failed just before loading. Skipping.")
-                 return None, 0.0
+                warnings.warn(f"Video {video_path} size check failed just before loading. Skipping.")
+                return None, 0.0
 
             vr = VideoReader(video_path, num_threads=max(1, os.cpu_count() // 2), ctx=cpu(0)) # Use half cores
             video_len = len(vr)
@@ -444,6 +448,7 @@ class InternVidDataset(Dataset):
             fake_len = len(vr_fake_check)
             fake_fps = vr_fake_check.get_avg_fps()
             del vr_fake_check
+            print(f"Real length: {real_len}, Real FPS: {real_fps}, Fake length: {fake_len}, Fake FPS: {fake_fps}")
         except Exception as e:
             warnings.warn(f"Failed to open real '{real_path}' or fake '{fake_path}' to get length/fps: {e}. Skipping pair index {index}.")
             # Try next sample recursively (be careful with recursion depth)
@@ -457,8 +462,8 @@ class InternVidDataset(Dataset):
         reference_fps = real_fps if real_fps > 0 else fake_fps # Use real FPS if available
 
         if reference_len <= 0:
-             warnings.warn(f"Reference length is zero for pair index {index} ({real_path}, {fake_path}). Skipping.")
-             return None
+            warnings.warn(f"Reference length is zero for pair index {index} ({real_path}, {fake_path}). Skipping.")
+            return None
 
         # --- Calculate consistent clip indices ---
         clip_indices = self._calculate_clip_indices(reference_len, reference_fps)
@@ -490,7 +495,7 @@ class InternVidDataset(Dataset):
             # 2. Split buffer into clips
             # Input buffer shape: [N*F, H, W, C] -> List of [F, H, W, C]
             clips = [buffer[i * self.frames_per_clip:(i + 1) * self.frames_per_clip]
-                     for i in range(self.num_clips)]
+                    for i in range(self.num_clips)]
 
             # 3. Apply individual clip transform
             if self.transform is not None:
@@ -499,7 +504,7 @@ class InternVidDataset(Dataset):
             else:
                 # If no transform, ensure tensor format (e.g., permute dims)
                 # Example: Convert list of [F,H,W,C] numpy to tensor [N, C, F, H, W]
-                 clips = [torch.from_numpy(clip).permute(3, 0, 1, 2) for clip in clips]
+                clips = [torch.from_numpy(clip).permute(3, 0, 1, 2) for clip in clips]
 
 
             # 4. Stack clips into a single tensor [N, C, F, H, W]
@@ -655,27 +660,6 @@ if __name__ == '__main__':
     # Configure logging for demonstration
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    # --- Dummy Data Setup (Replace with actual paths) ---
-    # Create dummy directories and files for testing
-    # BASE_DIR = "/blob/kyoungjun"
-    
-    # real_paths = [os.path.join(BASE_DIR, f"internvid_flt_{i}_reformatted") for i in range(1, 11)]
-    # fake_path = os.path.join(BASE_DIR, "gen_internvid_flt")
-    # metadata_file = os.path.join(BASE_DIR, "InternVid-10M-flt-zipindex.json")
-
-    # # Create dummy video files (empty files for path existence check)
-    # # In reality, these need to be actual video files loadable by decord
-    # dummy_real1 = os.path.join(DUMMY_BASE, "real_part_1", "video1.mp4")
-    # dummy_real2 = os.path.join(DUMMY_BASE, "real_part_2", "video2.mp4")
-    # dummy_fake1 = os.path.join(DUMMY_BASE, "fake", "video1.mp4")
-    # dummy_fake2 = os.path.join(DUMMY_BASE, "fake", "video2.mp4")
-    # dummy_fake3_no_real = os.path.join(DUMMY_BASE, "fake", "video3_no_real.mp4") # No corresponding real
-    # dummy_fake4_no_meta = os.path.join(DUMMY_BASE, "fake", "video4_no_meta.mp4") # No metadata entry
-    
-    # for f in [*real_paths, fake_path]:
-    #     print(f)
-
-
     # --- Configuration ---
     # REAL_PATHS = [os.path.join(DUMMY_BASE, "real_part_1"), os.path.join(DUMMY_BASE, "real_part_2")]
     # FAKE_PATH = os.path.join(DUMMY_BASE, "fake")
@@ -723,8 +707,8 @@ if __name__ == '__main__':
             try:
                 for i, batch_data in enumerate(dataloader):
                     if batch_data is None:
-                         logger.warning(f"Skipping batch {i} due to collation error.")
-                         continue
+                        logger.warning(f"Skipping batch {i} due to collation error.")
+                        continue
 
                     real_batch, fake_batch = batch_data
                     logger.info(f"Batch {i}:")
@@ -732,11 +716,11 @@ if __name__ == '__main__':
                     logger.info(f"  Fake batch shape: {fake_batch.shape}") # Expected: [B, N, C, F, H, W]
 
                     # Add a break to only process one batch in the example
-                    if i >= 0:
+                    if i >= 2:
                         break
                 logger.info("Finished iterating.")
             except ImportError:
-                 logger.error("Decord or Torchvision might be missing.")
+                logger.error("Decord or Torchvision might be missing.")
             except Exception as e:
                 logger.error(f"Error during iteration (may occur if dummy files aren't valid videos): {e}", exc_info=True)
         else:
