@@ -87,5 +87,67 @@ def init_data(
             rank=rank,
             drop_last=drop_last,
             log_dir=log_dir)
+        
+    return (data_loader, dist_sampler)
 
+
+def init_data_internvid(
+    real_video_paths: str,
+    fake_video_path: str,
+    metadata_json_path: str,
+    batch_size,
+    transform=None,
+    shared_transform=None,
+    data='ImageNet',
+    collator=None,
+    pin_mem=True,
+    num_workers=8,
+    world_size=1,
+    rank=0,
+    training=True,
+    copy_data=False,
+    drop_last=True,
+    tokenize_txt=True,
+    subset_file=None,
+    clip_len=8,
+    frame_sample_rate=2,
+    duration=None,
+    num_clips=1,
+    random_clip_sampling=True,
+    allow_clip_overlap=False,
+    filter_short_videos=False,
+    filter_long_videos=int(1e9),
+    decode_one_clip=True,
+    datasets_weights=None,
+    persistent_workers=False,
+    repeat_wds=False,
+    ipe=300,
+    log_dir=None,
+):
+    if data.lower() == 'internviddataset':
+        from custom.src.datasets.internvid_loader import make_internvid_dataloader
+        dataset, data_loader, dist_sampler = make_internvid_dataloader(
+            real_video_paths = real_video_paths,
+            fake_video_path = fake_video_path,
+            metadata_json_path = metadata_json_path,
+            batch_size = batch_size,
+            frames_per_clip = clip_len,
+            frame_step = frame_sample_rate,
+            num_clips = num_clips,
+            random_clip_sampling = random_clip_sampling,
+            allow_clip_overlap = allow_clip_overlap,
+            filter_long_videos = filter_long_videos,
+            duration = duration,
+            transform = transform,
+            shared_transform = shared_transform,
+            rank = rank,
+            world_size = world_size,
+            collator = collator,
+            drop_last = drop_last,
+            num_workers = num_workers,
+            pin_mem = pin_mem,
+            persistent_workers = persistent_workers,
+        )
+        
+    
     return (data_loader, dist_sampler)

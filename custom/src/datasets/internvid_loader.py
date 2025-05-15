@@ -117,7 +117,7 @@ class InternVidDataset(Dataset):
 
         Args:
             real_video_paths: List of base directories containing real videos, potentially
-                              structured by partition.
+                            structured by partition.
             fake_video_path: Directory containing the fake/AI-generated videos.
             metadata_json_path: Path to the JSON file containing metadata (linking fake
                                 filenames to partition info via 'zip_file').
@@ -504,7 +504,9 @@ class InternVidDataset(Dataset):
             else:
                 # If no transform, ensure tensor format (e.g., permute dims)
                 # Example: Convert list of [F,H,W,C] numpy to tensor [N, C, F, H, W]
-                clips = [torch.from_numpy(clip).permute(3, 0, 1, 2) for clip in clips]
+                # clips = [torch.from_numpy(clip).permute(3, 0, 1, 2) for clip in clips]
+                ## Let's keep the original shape [T, H, W, C] for now 
+                clips = [torch.from_numpy(clip) for clip in clips]
 
 
             # 4. Stack clips into a single tensor [N, C, F, H, W]
@@ -517,8 +519,12 @@ class InternVidDataset(Dataset):
         except Exception as e:
             logger.error(f"Error applying transforms for pair index {index} ({real_path}, {fake_path}): {e}", exc_info=True)
             return None # Signal failure
+    
+        # Add labels for real and fake 
+        labels = torch.tensor([0, 1], dtype=torch.long)
 
-        return real_clips_tensor, fake_clips_tensor
+        # Return tuple of (real_clips_tensor, fake_clips_tensor), labels, clip_indices
+        return (real_clips_tensor, fake_clips_tensor), labels, clip_indices
 
 
 def make_internvid_dataloader(
@@ -543,7 +549,7 @@ def make_internvid_dataloader(
     pin_mem: bool = True,
     persistent_workers: bool = True,
     **kwargs: Any # Allow extra args
-) -> Tuple[Optional[DataLoader], Optional[DistributedSampler]]:
+) -> Tuple[InternVidDataset, DataLoader, Optional[DistributedSampler]]:
     """
     Creates the InternVidDataset and corresponding DataLoader.
 
@@ -653,7 +659,7 @@ def make_internvid_dataloader(
 
     # Return dataset as well if needed downstream, similar to make_videodataset?
     # Original function only returned loader and sampler. Sticking to that.
-    return data_loader, dist_sampler
+    return dataset, data_loader, dist_sampler
 
 # Example Usage (Illustrative - requires actual data and paths)
 if __name__ == '__main__':
